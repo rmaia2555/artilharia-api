@@ -173,26 +173,3 @@ class Database:
     def fechar(self):
         self.conn.close()
 ```
-
----
-
-## 📋 PASSO 4: Adicionar DATABASE_URL no Render
-
-### **4.1 - Ir para API Service**
-
-1. Dashboard Render → **artilharia-api**
-2. Menu esquerdo → **Environment**
-
----
-
-### **4.2 - Adicionar Variável**
-
-Clique **"Add Environment Variable"**
-```
-Key: DATABASE_URL
-Value: [COLE A URL DO POSTGRESQL QUE COPIOU]
-```
-
-**Exemplo:**
-```
-postgresql://artilharia_user:xYz123AbC@dpg-abc123.frankfurt-postgres.render.com/artilharia
