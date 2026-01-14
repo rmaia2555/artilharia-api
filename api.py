@@ -33,49 +33,96 @@ def root():
         ]
     }
 
+from datetime import datetime, timedelta
+from typing import Optional
+
 @app.get("/noticias")
 def listar_noticias(
     limite: int = 20,
     dias: int = 7,
     categoria: Optional[str] = None
 ):
+    db = Database()
     cursor = db.conn.cursor()
-    data_inicio = (datetime.now() - timedelta(days=dias)).isoformat()
-    
-    if categoria:
-        cursor.execute('''
-            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+
+    limite = max(1, min(int(limite), 200))
+    dias = max(0, int(dias))
+
+    data_limite = (datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
+
+    if USE_POSTGRES:
+        where = "WHERE created_at >= %s"
+        params = [data_limite]
+
+        if categoria:
+            where += " AND palavras_chave ILIKE %s"
+            params.append(f"%{categoria}%")
+
+        cursor.execute(
+            f"""
+            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave, enviado, data_envio, created_at
             FROM noticias
-            WHERE data_publicacao >= ?
-            AND (palavras_chave LIKE ? OR titulo LIKE ?)
-            ORDER BY data_publicacao DESC
-            LIMIT ?
-        ''', (data_inicio, f'%{categoria}%', f'%{categoria}%', limite))
+            {where}
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (*params, limite)
+        )
+        rows = cursor.fetchall()
+
+        noticias = []
+        for r in rows:
+            noticias.append({
+                "id": r[0],
+                "titulo": r[1],
+                "url": r[2],
+                "fonte": r[3],
+                "data_publicacao": r[4],
+                "resumo": r[5],
+                "palavras_chave": r[6].split(",") if r[6] else [],
+                "enviado": r[7],
+                "data_envio": r[8],
+                "created_at": str(r[9]) if r[9] else None
+            })
+
     else:
-        cursor.execute('''
-            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+        where = "WHERE created_at >= ?"
+        params = [data_limite]
+
+        if categoria:
+            where += " AND palavras_chave LIKE ?"
+            params.append(f"%{categoria}%")
+
+        cursor.execute(
+            f"""
+            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave, enviado, data_envio, created_at
             FROM noticias
-            WHERE data_publicacao >= ?
-            ORDER BY data_publicacao DESC
+            {where}
+            ORDER BY created_at DESC
             LIMIT ?
-        ''', (data_inicio, limite))
-    
-    noticias = []
-    for row in cursor.fetchall():
-        noticias.append({
-            "id": row[0],
-            "titulo": row[1],
-            "url": row[2],
-            "fonte": row[3],
-            "data_publicacao": row[4],
-            "resumo": row[5],
-            "palavras_chave": row[6].split(',') if row[6] else []
-        })
-    
-    return {
-        "total": len(noticias),
-        "noticias": noticias
-    }
+            """,
+            (*params, limite)
+        )
+        rows = cursor.fetchall()
+
+        noticias = []
+        for r in rows:
+            noticias.append({
+                "id": r[0],
+                "titulo": r[1],
+                "url": r[2],
+                "fonte": r[3],
+                "data_publicacao": r[4],
+                "resumo": r[5],
+                "palavras_chave": r[6].split(",") if r[6] else [],
+                "enviado": bool(r[7]),
+                "data_envio": r[8],
+                "created_at": r[9]
+            })
+
+    db.fechar()
+    return {"total": len(noticias), "noticias": noticias}
+
 
 @app.get("/noticias/{noticia_id}")
 def detalhe_noticia(noticia_id: int):
