@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 from database import Database, USE_POSTGRES
 
-
 app = FastAPI(title="Artilharia Global API", version="1.0")
 
 app.add_middleware(
@@ -17,6 +16,7 @@ app.add_middleware(
 )
 
 db = Database()
+
 
 @app.get("/")
 def root():
@@ -31,16 +31,91 @@ def root():
             "/exercitos",
             "/exercitos/{id}",
             "/equipamentos",
-            "/equipamentos/{id}"
-        ]
+            "/equipamentos/{id}",
+            "/debug/db",
+        ],
     }
 
-from datetime import datetime, timedelta
-from typing import Optional
+
+@app.get("/noticias")
+def listar_noticias(
+    limite: int = 20,
+    dias: int = 7,
+    categoria: Optional[str] = None,
+):
+    cursor = db.conn.cursor()
+    data_inicio = (datetime.now() - timedelta(days=dias)).isoformat()
+
+    if USE_POSTGRES:
+        if categoria:
+            cursor.execute(
+                """
+                SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+                FROM noticias
+                WHERE data_publicacao >= %s
+                  AND (palavras_chave ILIKE %s OR titulo ILIKE %s)
+                ORDER BY data_publicacao DESC
+                LIMIT %s
+                """,
+                (data_inicio, f"%{categoria}%", f"%{categoria}%", limite),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+                FROM noticias
+                WHERE data_publicacao >= %s
+                ORDER BY data_publicacao DESC
+                LIMIT %s
+                """,
+                (data_inicio, limite),
+            )
+        rows = cursor.fetchall()
+    else:
+        if categoria:
+            cursor.execute(
+                """
+                SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+                FROM noticias
+                WHERE data_publicacao >= ?
+                  AND (palavras_chave LIKE ? OR titulo LIKE ?)
+                ORDER BY data_publicacao DESC
+                LIMIT ?
+                """,
+                (data_inicio, f"%{categoria}%", f"%{categoria}%", limite),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+                FROM noticias
+                WHERE data_publicacao >= ?
+                ORDER BY data_publicacao DESC
+                LIMIT ?
+                """,
+                (data_inicio, limite),
+            )
+        rows = cursor.fetchall()
+
+    noticias = []
+    for row in rows:
+        noticias.append(
+            {
+                "id": row[0],
+                "titulo": row[1],
+                "url": row[2],
+                "fonte": row[3],
+                "data_publicacao": row[4],
+                "resumo": row[5],
+                "palavras_chave": row[6].split(",") if row[6] else [],
+            }
+        )
+
+    return {"total": len(noticias), "noticias": noticias}
+
 
 @app.get("/noticias/{noticia_id}")
 def detalhe_noticia(noticia_id: int):
-    db = Database()
     cursor = db.conn.cursor()
 
     if USE_POSTGRES:
@@ -52,7 +127,6 @@ def detalhe_noticia(noticia_id: int):
             """,
             (noticia_id,),
         )
-        row = cursor.fetchone()
     else:
         cursor.execute(
             """
@@ -62,10 +136,8 @@ def detalhe_noticia(noticia_id: int):
             """,
             (noticia_id,),
         )
-        row = cursor.fetchone()
 
-    db.fechar()
-
+    row = cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Notícia não encontrada")
 
@@ -76,80 +148,65 @@ def detalhe_noticia(noticia_id: int):
         "fonte": row[3],
         "data_publicacao": row[4],
         "resumo": row[5],
-        "palavras_chave": row[6].split(",") if row[6] else []
+        "palavras_chave": row[6].split(",") if row[6] else [],
     }
 
-
-@app.get("/noticias/{noticia_id}")
-def detalhe_noticia(noticia_id: int):
-    db = Database()
-    cursor = db.conn.cursor()
-
-    if USE_POSTGRES:
-        cursor.execute(
-            """
-            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
-            FROM noticias
-            WHERE id = %s
-            """,
-            (noticia_id,),
-        )
-        row = cursor.fetchone()
-    else:
-        cursor.execute(
-            """
-            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
-            FROM noticias
-            WHERE id = ?
-            """,
-            (noticia_id,),
-        )
-        row = cursor.fetchone()
-
-    db.fechar()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Notícia não encontrada")
-
-    return {
-        "id": row[0],
-        "titulo": row[1],
-        "url": row[2],
-        "fonte": row[3],
-        "data_publicacao": row[4],
-        "resumo": row[5],
-        "palavras_chave": row[6].split(",") if row[6] else []
-    }
 
 @app.get("/estatisticas")
 def estatisticas_gerais():
     cursor = db.conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM noticias')
+
+    # total
+    cursor.execute("SELECT COUNT(*) FROM noticias")
     total = cursor.fetchone()[0]
-    
+
     ontem = (datetime.now() - timedelta(days=1)).isoformat()
-    cursor.execute('SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?', (ontem,))
-    ultimas_24h = cursor.fetchone()[0]
-    
     semana = (datetime.now() - timedelta(days=7)).isoformat()
-    cursor.execute('SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?', (semana,))
-    ultimos_7dias = cursor.fetchone()[0]
-    
-    cursor.execute('''
-        SELECT fonte, COUNT(*) as count
-        FROM noticias
-        GROUP BY fonte
-        ORDER BY count DESC
-        LIMIT 5
-    ''')
-    top_fontes = [{"fonte": row[0], "total": row[1]} for row in cursor.fetchall()]
-    
+
+    if USE_POSTGRES:
+        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= %s", (ontem,))
+        ultimas_24h = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= %s", (semana,))
+        ultimos_7dias = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT fonte, COUNT(*) as count
+            FROM noticias
+            GROUP BY fonte
+            ORDER BY count DESC
+            LIMIT 5
+            """
+        )
+        rows = cursor.fetchall()
+    else:
+        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?", (ontem,))
+        ultimas_24h = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?", (semana,))
+        ultimos_7dias = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT fonte, COUNT(*) as count
+            FROM noticias
+            GROUP BY fonte
+            ORDER BY count DESC
+            LIMIT 5
+            """
+        )
+        rows = cursor.fetchall()
+
+    top_fontes = [{"fonte": r[0], "total": r[1]} for r in rows]
+
     return {
         "total_noticias": total,
         "ultimas_24h": ultimas_24h,
         "ultimos_7_dias": ultimos_7dias,
-        "top_fontes": top_fontes
+        "top_fontes": top_fontes,
     }
+
 
 @app.get("/exercitos")
 def listar_exercitos():
@@ -161,7 +218,7 @@ def listar_exercitos():
             "bandeira": "🇧🇷",
             "efetivo_total": 360000,
             "efetivo_artilharia": 15000,
-            "principais_sistemas": ["ASTROS II", "M109A5", "Gepard"]
+            "principais_sistemas": ["ASTROS II", "M109A5", "Gepard"],
         },
         {
             "id": 2,
@@ -170,7 +227,7 @@ def listar_exercitos():
             "bandeira": "🇺🇸",
             "efetivo_total": 1390000,
             "efetivo_artilharia": 180000,
-            "principais_sistemas": ["M777", "HIMARS", "M109A7", "Patriot"]
+            "principais_sistemas": ["M777", "HIMARS", "M109A7", "Patriot"],
         },
         {
             "id": 3,
@@ -179,10 +236,11 @@ def listar_exercitos():
             "bandeira": "🇷🇺",
             "efetivo_total": 1150000,
             "efetivo_artilharia": 200000,
-            "principais_sistemas": ["2S19 Msta", "BM-30 Smerch", "S-400"]
+            "principais_sistemas": ["2S19 Msta", "BM-30 Smerch", "S-400"],
         },
     ]
     return {"total": len(exercitos), "exercitos": exercitos}
+
 
 @app.get("/exercitos/{exercito_id}")
 def detalhe_exercito(exercito_id: int):
@@ -198,14 +256,15 @@ def detalhe_exercito(exercito_id: int):
             "doutrina_resumo": "Baseada em doutrina francesa e americana",
             "principais_sistemas": [
                 {"nome": "ASTROS II", "tipo": "MLRS", "alcance": "90 km"},
-                {"nome": "M109A5 Howitzer", "tipo": "Obuseiro Autopropulsado", "alcance": "30 km"}
+                {"nome": "M109A5 Howitzer", "tipo": "Obuseiro Autopropulsado", "alcance": "30 km"},
             ],
             "curiosidades": [
                 "Maior exército da América do Sul",
-                "Possui Sistema ASTROS desenvolvido nacionalmente"
-            ]
+                "Possui Sistema ASTROS desenvolvido nacionalmente",
+            ],
         }
     raise HTTPException(status_code=404, detail="Exército não encontrado")
+
 
 @app.get("/equipamentos")
 def listar_equipamentos(tipo: Optional[str] = None):
@@ -216,7 +275,7 @@ def listar_equipamentos(tipo: Optional[str] = None):
             "tipo": "obuseiro",
             "pais_origem": "🇺🇸 EUA",
             "alcance_km": 40,
-            "usuarios": ["EUA", "Canadá", "Austrália", "Índia", "Ucrânia"]
+            "usuarios": ["EUA", "Canadá", "Austrália", "Índia", "Ucrânia"],
         },
         {
             "id": 2,
@@ -224,7 +283,7 @@ def listar_equipamentos(tipo: Optional[str] = None):
             "tipo": "mlrs",
             "pais_origem": "🇺🇸 EUA",
             "alcance_km": 300,
-            "usuarios": ["EUA", "Polônia", "Romênia", "Ucrânia"]
+            "usuarios": ["EUA", "Polônia", "Romênia", "Ucrânia"],
         },
         {
             "id": 3,
@@ -232,14 +291,15 @@ def listar_equipamentos(tipo: Optional[str] = None):
             "tipo": "obuseiro",
             "pais_origem": "🇫🇷 França",
             "alcance_km": 42,
-            "usuarios": ["França", "Dinamarca", "Ucrânia", "Marrocos"]
+            "usuarios": ["França", "Dinamarca", "Ucrânia", "Marrocos"],
         },
     ]
-    
+
     if tipo:
         equipamentos = [e for e in equipamentos if e["tipo"] == tipo.lower()]
-    
+
     return {"total": len(equipamentos), "equipamentos": equipamentos}
+
 
 @app.get("/equipamentos/{equipamento_id}")
 def detalhe_equipamento(equipamento_id: int):
@@ -256,7 +316,7 @@ def detalhe_equipamento(equipamento_id: int):
                 "alcance_normal": "24 km",
                 "peso": "4.200 kg",
                 "tripulacao": 5,
-                "cadencia_tiro": "2 tiros/minuto (sustentado)"
+                "cadencia_tiro": "2 tiros/minuto (sustentado)",
             },
             "ano_introducao": 2005,
             "usuarios": [
@@ -264,19 +324,20 @@ def detalhe_equipamento(equipamento_id: int):
                 {"pais": "Canadá", "quantidade": 37},
                 {"pais": "Austrália", "quantidade": 57},
                 {"pais": "Índia", "quantidade": 145},
-                {"pais": "Ucrânia", "quantidade": 126}
+                {"pais": "Ucrânia", "quantidade": 126},
             ],
             "em_producao": True,
             "curiosidades": [
                 "Construído majoritariamente em titânio para reduzir peso",
                 "Pode ser transportado por helicóptero",
-                "Sistema de pontaria digital avançado"
-            ]
+                "Sistema de pontaria digital avançado",
+            ],
         }
     raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+
+
 @app.get("/debug/db")
 def debug_db():
-    db = Database()
     cur = db.conn.cursor()
 
     if USE_POSTGRES:
@@ -286,22 +347,22 @@ def debug_db():
         cur.execute("SELECT COUNT(*) FROM noticias;")
         total = cur.fetchone()[0]
 
-        cur.execute("""
+        cur.execute(
+            """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_name = 'noticias'
             ORDER BY ordinal_position;
-        """)
+            """
+        )
         cols = [r[0] for r in cur.fetchall()]
 
-        db.fechar()
         return {"engine": "postgres", "dbinfo": dbinfo, "total_noticias": total, "cols": cols}
 
-    else:
-        cur.execute("SELECT COUNT(*) FROM noticias;")
-        total = cur.fetchone()[0]
-        db.fechar()
-        return {"engine": "sqlite", "total_noticias": total}
+    cur.execute("SELECT COUNT(*) FROM noticias;")
+    total = cur.fetchone()[0]
+    return {"engine": "sqlite", "total_noticias": total}
+
 
 if __name__ == "__main__":
     import uvicorn
