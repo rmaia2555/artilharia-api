@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from database import Database, USE_POSTGRES
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Optional
+from fastapi import HTTPException
+from database import Database, USE_POSTGRES
+
 
 app = FastAPI(title="Artilharia Global API", version="1.0")
 
@@ -36,107 +36,37 @@ def root():
 from datetime import datetime, timedelta
 from typing import Optional
 
-@app.get("/noticias")
-def listar_noticias(
-    limite: int = 20,
-    dias: int = 7,
-    categoria: Optional[str] = None
-):
+@app.get("/noticias/{noticia_id}")
+def detalhe_noticia(noticia_id: int):
     db = Database()
     cursor = db.conn.cursor()
 
-    limite = max(1, min(int(limite), 200))
-    dias = max(0, int(dias))
-
-    data_limite = (datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
-
     if USE_POSTGRES:
-        where = "WHERE created_at >= %s"
-        params = [data_limite]
-
-        if categoria:
-            where += " AND palavras_chave ILIKE %s"
-            params.append(f"%{categoria}%")
-
         cursor.execute(
-            f"""
-            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave, enviado, data_envio, created_at
+            """
+            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
             FROM noticias
-            {where}
-            ORDER BY created_at DESC
-            LIMIT %s
+            WHERE id = %s
             """,
-            (*params, limite)
+            (noticia_id,),
         )
-        rows = cursor.fetchall()
-
-        noticias = []
-        for r in rows:
-            noticias.append({
-                "id": r[0],
-                "titulo": r[1],
-                "url": r[2],
-                "fonte": r[3],
-                "data_publicacao": r[4],
-                "resumo": r[5],
-                "palavras_chave": r[6].split(",") if r[6] else [],
-                "enviado": r[7],
-                "data_envio": r[8],
-                "created_at": str(r[9]) if r[9] else None
-            })
-
+        row = cursor.fetchone()
     else:
-        where = "WHERE created_at >= ?"
-        params = [data_limite]
-
-        if categoria:
-            where += " AND palavras_chave LIKE ?"
-            params.append(f"%{categoria}%")
-
         cursor.execute(
-            f"""
-            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave, enviado, data_envio, created_at
+            """
+            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
             FROM noticias
-            {where}
-            ORDER BY created_at DESC
-            LIMIT ?
+            WHERE id = ?
             """,
-            (*params, limite)
+            (noticia_id,),
         )
-        rows = cursor.fetchall()
-
-        noticias = []
-        for r in rows:
-            noticias.append({
-                "id": r[0],
-                "titulo": r[1],
-                "url": r[2],
-                "fonte": r[3],
-                "data_publicacao": r[4],
-                "resumo": r[5],
-                "palavras_chave": r[6].split(",") if r[6] else [],
-                "enviado": bool(r[7]),
-                "data_envio": r[8],
-                "created_at": r[9]
-            })
+        row = cursor.fetchone()
 
     db.fechar()
-    return {"total": len(noticias), "noticias": noticias}
 
-
-@app.get("/noticias/{noticia_id}")
-def detalhe_noticia(noticia_id: int):
-    cursor = db.conn.cursor()
-    cursor.execute('''
-        SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
-        FROM noticias
-        WHERE id = ?
-    ''', (noticia_id,))
-    
-    row = cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Notícia não encontrada")
-    
+
     return {
         "id": row[0],
         "titulo": row[1],
@@ -144,7 +74,49 @@ def detalhe_noticia(noticia_id: int):
         "fonte": row[3],
         "data_publicacao": row[4],
         "resumo": row[5],
-        "palavras_chave": row[6].split(',') if row[6] else []
+        "palavras_chave": row[6].split(",") if row[6] else []
+    }
+
+
+@app.get("/noticias/{noticia_id}")
+def detalhe_noticia(noticia_id: int):
+    db = Database()
+    cursor = db.conn.cursor()
+
+    if USE_POSTGRES:
+        cursor.execute(
+            """
+            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+            FROM noticias
+            WHERE id = %s
+            """,
+            (noticia_id,),
+        )
+        row = cursor.fetchone()
+    else:
+        cursor.execute(
+            """
+            SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
+            FROM noticias
+            WHERE id = ?
+            """,
+            (noticia_id,),
+        )
+        row = cursor.fetchone()
+
+    db.fechar()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Notícia não encontrada")
+
+    return {
+        "id": row[0],
+        "titulo": row[1],
+        "url": row[2],
+        "fonte": row[3],
+        "data_publicacao": row[4],
+        "resumo": row[5],
+        "palavras_chave": row[6].split(",") if row[6] else []
     }
 
 @app.get("/estatisticas")
