@@ -1,29 +1,20 @@
 import os
+import sqlite3
 from datetime import datetime
 
-# Detectar qual banco usar
-DATABASE_URL = os.getenv('DATABASE_URL').strip()
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
+# Render às vezes usa postgres:// (SQLAlchemy/psycopg2 aceitam postgresql://)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-if DATABASE_URL.startswith("postgresql://"):
+USE_POSTGRES = DATABASE_URL.startswith("postgresql://")
+
+if USE_POSTGRES:
     import psycopg2
     from psycopg2.extras import RealDictCursor
-    USE_POSTGRES = True
-else:
-    import sqlite3
-    USE_POSTGRES = False
-    DATABASE_PATH = os.getenv("DATABASE_PATH", "data/noticias.db")
-    # PostgreSQL (Produção - Render)
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    USE_POSTGRES = True
-else:
-    # SQLite (Local - Desenvolvimento)
-    import sqlite3
-    USE_POSTGRES = False
-    DATABASE_PATH = os.getenv('DATABASE_PATH', 'data/noticias.db')
+
+DATABASE_PATH = os.getenv("DATABASE_PATH", "data/noticias.db")
 
 class Database:
     def __init__(self):
