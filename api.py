@@ -300,6 +300,34 @@ def detalhe_equipamento(equipamento_id: int):
             ]
         }
     raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+@app.get("/debug/db")
+def debug_db():
+    db = Database()
+    cur = db.conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("SELECT current_database(), current_user;")
+        dbinfo = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*) FROM noticias;")
+        total = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'noticias'
+            ORDER BY ordinal_position;
+        """)
+        cols = [r[0] for r in cur.fetchall()]
+
+        db.fechar()
+        return {"engine": "postgres", "dbinfo": dbinfo, "total_noticias": total, "cols": cols}
+
+    else:
+        cur.execute("SELECT COUNT(*) FROM noticias;")
+        total = cur.fetchone()[0]
+        db.fechar()
+        return {"engine": "sqlite", "total_noticias": total}
 
 if __name__ == "__main__":
     import uvicorn
