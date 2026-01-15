@@ -1,7 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 from database import Database, USE_POSTGRES
 
@@ -16,6 +17,39 @@ app.add_middleware(
 )
 
 db = Database()
+
+
+def parse_data_publicacao(s: Optional[str]) -> Optional[datetime]:
+    """
+    Converte string tipo:
+      'Wed, 14 Jan 2026 15:38:00 GMT'
+    em datetime timezone-aware (UTC).
+    """
+    if not s:
+        return None
+
+    s = s.strip()
+
+    # Tenta RFC 2822 (Google News RSS geralmente vem assim)
+    try:
+        dt = parsedate_to_datetime(s)
+        if dt is None:
+            return None
+        # garante timezone
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+
+    # fallback: tenta ISO (caso em algum momento você normalize)
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 @app.get("/")
@@ -39,6 +73,8 @@ def root():
 
 @app.get("/noticias")
 def listar_noticias(limite: int = 20, dias: int = 7, q: Optional[str] = None):
+    # Mantive como antes: filtro por string (funciona “ok” pro teu caso atual),
+    # mas o foco aqui foi corrigir estatisticas.
     data_inicio = (datetime.now() - timedelta(days=dias)).isoformat()
 
     if q:
@@ -132,21 +168,29 @@ def detalhe_noticia(noticia_id: int):
 def estatisticas_gerais():
     total = db.query_one("SELECT COUNT(*) FROM noticias", "SELECT COUNT(*) FROM noticias")[0]
 
-    ontem = (datetime.now() - timedelta(days=1)).isoformat()
-    ultimas_24h = db.query_one(
-        "SELECT COUNT(*) FROM noticias WHERE data_publicacao >= %s",
-        "SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?",
-        (ontem,),
-    )[0]
-
-    semana = (datetime.now() - timedelta(days=7)).isoformat()
-    ultimos_7dias = db.query_one(
-        "SELECT COUNT(*) FROM noticias WHERE data_publicacao >= %s",
-        "SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?",
-        (semana,),
-    )[0]
-
+    # pega todas as datas uma vez e calcula em Python (correto para RFC2822)
     rows = db.query_all(
+        "SELECT data_publicacao FROM noticias",
+        "SELECT data_publicacao FROM noticias",
+    )
+
+    now_utc = datetime.now(timezone.utc)
+    limite_24h = now_utc - timedelta(hours=24)
+    limite_7d = now_utc - timedelta(days=7)
+
+    ultimas_24h = 0
+    ultimos_7dias = 0
+
+    for (dp,) in rows:
+        dt = parse_data_publicacao(dp)
+        if not dt:
+            continue
+        if dt >= limite_7d:
+            ultimos_7dias += 1
+        if dt >= limite_24h:
+            ultimas_24h += 1
+
+    top_rows = db.query_all(
         """
         SELECT fonte, COUNT(*) as total
         FROM noticias
@@ -162,20 +206,21 @@ def estatisticas_gerais():
         LIMIT 5
         """,
     )
-    top_fontes = [{"fonte": r[0], "total": r[1]} for r in rows]
+    top_fontes = [{"fonte": r[0], "total": r[1]} for r in top_rows]
 
     return {
         "total_noticias": total,
         "ultimas_24h": ultimas_24h,
         "ultimos_7_dias": ultimos_7dias,
         "top_fontes": top_fontes,
+        "agora_utc": now_utc.isoformat(),
     }
 
 
 @app.get("/debug/db")
 def debug_db():
     if USE_POSTGRES:
-        dbinfo = db.query_one("SELECT current_database(), current_user;", "")  # sqlite não usa
+        dbinfo = db.query_one("SELECT current_database(), current_user;", "")
         total = db.query_one("SELECT COUNT(*) FROM noticias;", "SELECT COUNT(*) FROM noticias;")[0]
         cols_rows = db.query_all(
             """
@@ -194,7 +239,7 @@ def debug_db():
 
 
 # -------------------------------------------------------------------
-# MOCK endpoints (mantive os seus)
+# MOCK endpoints
 # -------------------------------------------------------------------
 @app.get("/exercitos")
 def listar_exercitos():
