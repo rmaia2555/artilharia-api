@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from database import Database
+from database import Database, USE_POSTGRES
 from datetime import datetime, timedelta
 from typing import List, Optional
 
