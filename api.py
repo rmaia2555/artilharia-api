@@ -1,3 +1,4 @@
+# api.py
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
@@ -43,37 +44,41 @@ def listar_noticias(
     dias: int = 7,
     categoria: Optional[str] = None,
 ):
-    cursor = db.conn.cursor()
-    data_inicio = (datetime.now() - timedelta(days=dias)).isoformat()
+    cur = db.conn.cursor()
+    data_inicio_iso = (datetime.utcnow() - timedelta(days=dias)).isoformat()
 
     if USE_POSTGRES:
+        # Convert RSS date string -> timestamp for correct filtering
+        # Example RSS: "Wed, 14 Jan 2026 15:38:00 GMT"
+        # fmt: "Dy, DD Mon YYYY HH24:MI:SS GMT"
         if categoria:
-            cursor.execute(
+            cur.execute(
                 """
                 SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
                 FROM noticias
-                WHERE data_publicacao >= %s
+                WHERE to_timestamp(data_publicacao, 'Dy, DD Mon YYYY HH24:MI:SS "GMT"') >= %s::timestamp
                   AND (palavras_chave ILIKE %s OR titulo ILIKE %s)
-                ORDER BY data_publicacao DESC
+                ORDER BY to_timestamp(data_publicacao, 'Dy, DD Mon YYYY HH24:MI:SS "GMT"') DESC
                 LIMIT %s
                 """,
-                (data_inicio, f"%{categoria}%", f"%{categoria}%", limite),
+                (data_inicio_iso, f"%{categoria}%", f"%{categoria}%", limite),
             )
         else:
-            cursor.execute(
+            cur.execute(
                 """
                 SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
                 FROM noticias
-                WHERE data_publicacao >= %s
-                ORDER BY data_publicacao DESC
+                WHERE to_timestamp(data_publicacao, 'Dy, DD Mon YYYY HH24:MI:SS "GMT"') >= %s::timestamp
+                ORDER BY to_timestamp(data_publicacao, 'Dy, DD Mon YYYY HH24:MI:SS "GMT"') DESC
                 LIMIT %s
                 """,
-                (data_inicio, limite),
+                (data_inicio_iso, limite),
             )
-        rows = cursor.fetchall()
+        rows = cur.fetchall()
     else:
+        # SQLite fallback: keep as-is (string compare), but your production is Postgres anyway.
         if categoria:
-            cursor.execute(
+            cur.execute(
                 """
                 SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
                 FROM noticias
@@ -82,10 +87,10 @@ def listar_noticias(
                 ORDER BY data_publicacao DESC
                 LIMIT ?
                 """,
-                (data_inicio, f"%{categoria}%", f"%{categoria}%", limite),
+                (data_inicio_iso, f"%{categoria}%", f"%{categoria}%", limite),
             )
         else:
-            cursor.execute(
+            cur.execute(
                 """
                 SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
                 FROM noticias
@@ -93,9 +98,9 @@ def listar_noticias(
                 ORDER BY data_publicacao DESC
                 LIMIT ?
                 """,
-                (data_inicio, limite),
+                (data_inicio_iso, limite),
             )
-        rows = cursor.fetchall()
+        rows = cur.fetchall()
 
     noticias = []
     for row in rows:
@@ -106,7 +111,7 @@ def listar_noticias(
                 "url": row[2],
                 "fonte": row[3],
                 "data_publicacao": row[4],
-                "resumo": row[5],
+                "resumo": row[5] or "",
                 "palavras_chave": row[6].split(",") if row[6] else [],
             }
         )
@@ -116,10 +121,10 @@ def listar_noticias(
 
 @app.get("/noticias/{noticia_id}")
 def detalhe_noticia(noticia_id: int):
-    cursor = db.conn.cursor()
+    cur = db.conn.cursor()
 
     if USE_POSTGRES:
-        cursor.execute(
+        cur.execute(
             """
             SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
             FROM noticias
@@ -128,7 +133,7 @@ def detalhe_noticia(noticia_id: int):
             (noticia_id,),
         )
     else:
-        cursor.execute(
+        cur.execute(
             """
             SELECT id, titulo, url, fonte, data_publicacao, resumo, palavras_chave
             FROM noticias
@@ -137,7 +142,7 @@ def detalhe_noticia(noticia_id: int):
             (noticia_id,),
         )
 
-    row = cursor.fetchone()
+    row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Notícia não encontrada")
 
@@ -147,30 +152,37 @@ def detalhe_noticia(noticia_id: int):
         "url": row[2],
         "fonte": row[3],
         "data_publicacao": row[4],
-        "resumo": row[5],
+        "resumo": row[5] or "",
         "palavras_chave": row[6].split(",") if row[6] else [],
     }
 
 
 @app.get("/estatisticas")
 def estatisticas_gerais():
-    cursor = db.conn.cursor()
+    cur = db.conn.cursor()
 
-    # total
-    cursor.execute("SELECT COUNT(*) FROM noticias")
-    total = cursor.fetchone()[0]
-
-    ontem = (datetime.now() - timedelta(days=1)).isoformat()
-    semana = (datetime.now() - timedelta(days=7)).isoformat()
+    cur.execute("SELECT COUNT(*) FROM noticias")
+    total = cur.fetchone()[0]
 
     if USE_POSTGRES:
-        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= %s", (ontem,))
-        ultimas_24h = cursor.fetchone()[0]
+        # Use SQL timestamps to get correct windows
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM noticias
+            WHERE to_timestamp(data_publicacao, 'Dy, DD Mon YYYY HH24:MI:SS "GMT"') >= (NOW() AT TIME ZONE 'UTC') - INTERVAL '24 hours'
+            """
+        )
+        ultimas_24h = cur.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= %s", (semana,))
-        ultimos_7dias = cursor.fetchone()[0]
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM noticias
+            WHERE to_timestamp(data_publicacao, 'Dy, DD Mon YYYY HH24:MI:SS "GMT"') >= (NOW() AT TIME ZONE 'UTC') - INTERVAL '7 days'
+            """
+        )
+        ultimos_7dias = cur.fetchone()[0]
 
-        cursor.execute(
+        cur.execute(
             """
             SELECT fonte, COUNT(*) as count
             FROM noticias
@@ -179,15 +191,19 @@ def estatisticas_gerais():
             LIMIT 5
             """
         )
-        rows = cursor.fetchall()
+        top_fontes = [{"fonte": r[0], "total": r[1]} for r in cur.fetchall()]
     else:
-        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?", (ontem,))
-        ultimas_24h = cursor.fetchone()[0]
+        # SQLite fallback (not perfect if RSS date), but OK for local
+        ontem = (datetime.utcnow() - timedelta(days=1)).isoformat()
+        semana = (datetime.utcnow() - timedelta(days=7)).isoformat()
 
-        cursor.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?", (semana,))
-        ultimos_7dias = cursor.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?", (ontem,))
+        ultimas_24h = cur.fetchone()[0]
 
-        cursor.execute(
+        cur.execute("SELECT COUNT(*) FROM noticias WHERE data_publicacao >= ?", (semana,))
+        ultimos_7dias = cur.fetchone()[0]
+
+        cur.execute(
             """
             SELECT fonte, COUNT(*) as count
             FROM noticias
@@ -196,9 +212,7 @@ def estatisticas_gerais():
             LIMIT 5
             """
         )
-        rows = cursor.fetchall()
-
-    top_fontes = [{"fonte": r[0], "total": r[1]} for r in rows]
+        top_fontes = [{"fonte": r[0], "total": r[1]} for r in cur.fetchall()]
 
     return {
         "total_noticias": total,
@@ -366,4 +380,5 @@ def debug_db():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
